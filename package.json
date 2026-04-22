@@ -1,0 +1,20 @@
+{
+  "name": "peace-swex-plugin",
+  "version": "1.0.0",
+  "description": "SWEX plugin that streams Summoners War guild siege data to Peace.",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RaspFR/peace-swex-plugin.git"
+  },
+  "scripts": {
+    "install-plugin-deps": "npm --prefix swpl install --omit=dev",
+    "build": "npm run install-plugin-deps && node scripts/build.js",
+    "smoke-test": "npm run install-plugin-deps && node scripts/smoke-test.js",
+    "clean": "rimraf dist"
+  },
+  "devDependencies": {
+    "@electron/asar": "^4.0.1",
+    "rimraf": "^6.0.1"
+  }
+}

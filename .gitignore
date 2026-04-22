@@ -1,0 +1,5 @@
+node_modules/
+swpl/node_modules/
+*.log
+.DS_Store
+Thumbs.db

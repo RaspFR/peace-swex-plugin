@@ -1,0 +1,10 @@
+{
+  "name": "swpl",
+  "version": "1.0.0",
+  "description": "Peace SWEX plugin — streams guild siege data to Peace.",
+  "main": "index.js",
+  "private": true,
+  "dependencies": {
+    "axios": "^1.7.7"
+  }
+}
