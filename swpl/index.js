@@ -2,7 +2,7 @@
 
 const axios = require('axios');
 
-const version = '1.0.0';
+const version = '1.0.1';
 const pluginName = 'swpl';
 
 // Commands we listen to. Each one maps 1:1 to an `ingest` type on the Peace
@@ -60,6 +60,30 @@ function isDuplicate(command, resp) {
   return false;
 }
 
+// Pull the Com2uS season block out of a GetGuildSiegeStatusInfo response.
+// Returns null if the fields aren't present (so the caller can decide not to
+// overwrite a freshly captured season with an empty one).
+function extractSeason(resp) {
+  if (!resp || typeof resp !== 'object') return null;
+  const n = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  const seasonNumber = n(resp.season_number);
+  const seasonId = n(resp.season_id);
+  const seasonType = n(resp.season_type);
+  const seasonBeginTime = n(resp.season_begin_time);
+  const seasonEndTime = n(resp.season_end_time);
+  // If no field is usable, don't manufacture a context object.
+  if (
+    seasonNumber == null &&
+    seasonId == null &&
+    seasonType == null &&
+    seasonBeginTime == null &&
+    seasonEndTime == null
+  ) {
+    return null;
+  }
+  return { seasonNumber, seasonId, seasonType, seasonBeginTime, seasonEndTime };
+}
+
 // Best-guess extraction of the "current match" id from whatever payload we
 // just received. The Peace backend uses this to attach contribution / defense
 // deck uploads to the right match when the SW response doesn't include one
@@ -107,6 +131,12 @@ module.exports = {
   // contribution / defense-deck payloads that don't self-identify the match.
   _contextMatchId: undefined,
 
+  // Com2uS siege season snapshot, pulled from the latest
+  // GetGuildSiegeStatusInfo we saw. Attached to every non-Status upload so
+  // the Peace backend can stamp each match with the season it belongs to.
+  // Seasons span ~3 months and can't be derived from siege_id / match_id.
+  _contextSeason: undefined,
+
   init(proxy, config) {
     const cfg = () => config.Config.Plugins[pluginName] || {};
 
@@ -144,6 +174,13 @@ module.exports = {
         const observedMatchId = extractMatchId(command, rawCopy);
         if (observedMatchId) this._contextMatchId = observedMatchId;
 
+        // Refresh the season snapshot from Status calls only. Other commands
+        // don't carry the season block, so we must not overwrite with null.
+        if (command === 'GetGuildSiegeStatusInfo') {
+          const observedSeason = extractSeason(rawCopy);
+          if (observedSeason) this._contextSeason = observedSeason;
+        }
+
         if (isDuplicate(command, rawCopy)) {
           if (c.debugLog) {
             proxy.log({
@@ -180,6 +217,7 @@ module.exports = {
       guildId: req && req.guild_id,
       capturedAt: Math.floor(Date.now() / 1000),
       contextMatchId: this._contextMatchId,
+      contextSeason: this._contextSeason,
       raw: rawResp,
     };
 

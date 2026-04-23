@@ -36,6 +36,20 @@ function makeProxy() {
   };
 }
 
+function fakeStatusInfoResponse() {
+  return {
+    command: 'GetGuildSiegeStatusInfo',
+    ret_code: 0,
+    season_number: 21,
+    season_id: 25,
+    season_type: 0,
+    season_begin_time: 1774861200,
+    season_end_time: 1782507599,
+    season_contest_begin_time: 1782723600,
+    season_contest_end_time: 1784411999,
+  };
+}
+
 function fakeBattleLogResponse() {
   return {
     command: 'GetGuildSiegeBattleLog',
@@ -106,6 +120,22 @@ async function main() {
     const proxy = makeProxy();
     plugin.init(proxy, config);
 
+    // Feed a Status payload first so the plugin captures the season context.
+    // In production the game client always fetches GetGuildSiegeStatusInfo
+    // when entering the siege menu, before any BattleLog call, so this
+    // mirrors the real ordering.
+    const statusReq = {
+      command: 'GetGuildSiegeStatusInfo',
+      wizard_id: 79141,
+      guild_id: 121293,
+    };
+    proxy.emit(
+      'GetGuildSiegeStatusInfo',
+      Object.freeze(statusReq),
+      Object.freeze(fakeStatusInfoResponse())
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
     // Fire a fake event
     const req = { command: 'GetGuildSiegeBattleLog', wizard_id: 79141, guild_id: 121293 };
     const resp = fakeBattleLogResponse();
@@ -115,9 +145,10 @@ async function main() {
     await new Promise((r) => setTimeout(r, 300));
 
     console.log(`[smoke] captured ${received.length} HTTP request(s)`);
-    if (received.length !== 1) throw new Error('Expected exactly 1 upload');
+    if (received.length !== 2) throw new Error('Expected 2 uploads (Status + BattleLog)');
 
-    const hit = received[0];
+    const statusHit = received[0];
+    const hit = received[1];
     console.log(`[smoke] method=${hit.method} url=${hit.url}`);
     console.log(`[smoke] auth=${hit.auth}`);
     console.log('[smoke] payload keys:', Object.keys(hit.body));
@@ -126,6 +157,7 @@ async function main() {
     console.log('[smoke] payload.wizardId:', hit.body.wizardId);
     console.log('[smoke] payload.guildId:', hit.body.guildId);
     console.log('[smoke] payload.contextMatchId:', hit.body.contextMatchId);
+    console.log('[smoke] payload.contextSeason:', JSON.stringify(hit.body.contextSeason));
     console.log('[smoke] raw.command:', hit.body.raw && hit.body.raw.command);
 
     const errors = [];
@@ -133,6 +165,9 @@ async function main() {
     if (hit.url !== '/api/guild/siege/battles/import') errors.push(`unexpected url ${hit.url}`);
     if (hit.auth !== 'Bearer test-token') errors.push(`bad auth header: ${hit.auth}`);
     if (hit.body.version !== 1) errors.push('missing version:1');
+    if (statusHit.body.type !== 'GuildSiegeStatusInfo') {
+      errors.push(`first upload type should be GuildSiegeStatusInfo, got ${statusHit.body.type}`);
+    }
     if (hit.body.type !== 'GuildSiegeBattleLog') errors.push(`bad type: ${hit.body.type}`);
     if (hit.body.contextMatchId !== '2026040401000023') {
       errors.push(`bad contextMatchId: ${hit.body.contextMatchId}`);
@@ -140,12 +175,28 @@ async function main() {
     if (!hit.body.raw || hit.body.raw.command !== 'GetGuildSiegeBattleLog') {
       errors.push('missing raw payload');
     }
+    // Season context must have been stamped from the earlier Status call and
+    // attached to the BattleLog upload.
+    const season = hit.body.contextSeason;
+    if (!season) {
+      errors.push('contextSeason missing on BattleLog upload');
+    } else {
+      if (season.seasonNumber !== 21) errors.push(`bad seasonNumber: ${season.seasonNumber}`);
+      if (season.seasonId !== 25) errors.push(`bad seasonId: ${season.seasonId}`);
+      if (season.seasonType !== 0) errors.push(`bad seasonType: ${season.seasonType}`);
+      if (season.seasonBeginTime !== 1774861200) {
+        errors.push(`bad seasonBeginTime: ${season.seasonBeginTime}`);
+      }
+      if (season.seasonEndTime !== 1782507599) {
+        errors.push(`bad seasonEndTime: ${season.seasonEndTime}`);
+      }
+    }
 
     // Test dedup: second identical event within the window should NOT upload.
     proxy.emit('GetGuildSiegeBattleLog', Object.freeze(req), Object.freeze(resp));
     await new Promise((r) => setTimeout(r, 300));
-    if (received.length !== 1) {
-      errors.push(`dedup failed: got ${received.length} uploads, expected 1`);
+    if (received.length !== 2) {
+      errors.push(`dedup failed: got ${received.length} uploads, expected 2`);
     }
 
     if (errors.length > 0) {
