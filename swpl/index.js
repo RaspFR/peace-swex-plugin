@@ -2,27 +2,43 @@
 
 const axios = require('axios');
 
-const version = '1.0.1';
+const version = '1.1.0';
 const pluginName = 'swpl';
 
 // Commands we listen to. Each one maps 1:1 to an `ingest` type on the Peace
 // side (see lib/siege/battlesIngest.ts INGEST_TYPES).
+//
+// Some SW commands use a lowercase first letter (e.g. `getGuildSiege...`) and
+// a `_vN` suffix (e.g. `getGuildSiegeMatchBattleLogSummary_v2`). We normalize
+// both away in `toIngestType` so the matching ingest type stays clean.
 const BATTLE_COMMANDS = [
   'GetGuildSiegeBattleLog',
   'GetGuildSiegeBattleLogByWizardId',
   'GetGuildSiegeMatchupInfo',
+  'GetGuildSiegeMatchupInfoForFinished',
   'GetGuildSiegeMatchLog',
+  'getGuildSiegeMatchBattleLogSummary_v2',
   'GetGuildSiegeContributeList',
   'GetGuildSiegeDefenseDeckByWizardId',
   'GetGuildSiegeParticipatedSiegeIdList',
   'GetGuildSiegeRankingInfo',
+  'GetGuildSiegeMemberStatSeasonList',
   'GetGuildSiegeStatusInfo',
 ];
 
-// Strip every SW command name prefix to get the ingest `type` expected by
-// the Peace API (e.g. "GetGuildSiegeBattleLog" → "GuildSiegeBattleLog").
+// Strip the `get`/`Get` prefix and any trailing `_vN` version tag to get the
+// ingest `type` expected by the Peace API.
+//   "GetGuildSiegeBattleLog"                 → "GuildSiegeBattleLog"
+//   "getGuildSiegeMatchBattleLogSummary_v2"  → "GuildSiegeMatchBattleLogSummary"
 function toIngestType(command) {
-  return command.startsWith('Get') ? command.slice(3) : command;
+  let s = command;
+  if (s.startsWith('Get') || s.startsWith('get')) s = s.slice(3);
+  // Capitalize first letter so lowercase-prefix commands match the casing of
+  // the others ("guild..." → "Guild...").
+  if (s.length > 0) s = s[0].toUpperCase() + s.slice(1);
+  // Drop a trailing _vN (e.g. "_v2"), if any.
+  s = s.replace(/_v\d+$/, '');
+  return s;
 }
 
 // Short in-memory dedup to avoid hammering the API when SW refires the same
@@ -100,6 +116,11 @@ function extractMatchId(command, resp) {
         return String(items[0].match_id);
       }
     }
+  }
+  // Summary_v2 ships the match id only inside guild_list[].match_id.
+  const guildList = resp.guild_list;
+  if (Array.isArray(guildList) && guildList.length > 0 && guildList[0].match_id != null) {
+    return String(guildList[0].match_id);
   }
   return undefined;
 }
