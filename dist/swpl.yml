@@ -1,6 +1,6 @@
 version: 1.1.1
 file: swpl.asar
 url: https://github.com/RaspFR/peace-swex-plugin/releases/download/v1.1.1/swpl.asar
-sha512: bafa1e762f8aa9b3d133f43f0c9022ed31f7f190b667dcce560fa1dfb8061f486cf869e70d173c17019c8b66816baed4374acc87d08c147bbaa8ec20fd464813
-size: 3306212
-releaseDate: 2026-05-06T19:03:13.018Z
+sha512: f66fd9a506ab0d7ab56bb296cd5868a3ffd703a9592277d51ba5d7dbebe6338ca10c42eb52787e68f18a88e695f30b983f3233302108ff96f9ac67dde4d12653
+size: 3306228
+releaseDate: 2026-05-06T19:05:30.822Z
