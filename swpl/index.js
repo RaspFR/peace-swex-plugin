@@ -2,7 +2,7 @@
 
 const axios = require('axios');
 
-const version = '1.1.0';
+const version = '1.1.1';
 const pluginName = 'swpl';
 
 // Commands we listen to. Each one maps 1:1 to an `ingest` type on the Peace
