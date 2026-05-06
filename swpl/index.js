@@ -127,7 +127,7 @@ function extractMatchId(command, resp) {
 
 module.exports = {
   pluginName,
-  pluginDescription: 'Streams guild siege data to Peace (peace-sigma-ten.vercel.app).',
+  pluginDescription: 'Streams guild siege data to Peace (www.swpeace.fr).',
   version,
   autoUpdate: {
     // GitHub serves raw files over HTTPS from raw.githubusercontent.com and
@@ -138,7 +138,7 @@ module.exports = {
 
   defaultConfig: {
     enabled: true,
-    apiUrl: 'https://peace-sigma-ten.vercel.app/api/guild/siege/battles/import',
+    apiUrl: 'https://www.swpeace.fr/api/guild/siege/battles/import',
     apiToken: '',
     debugLog: false,
   },

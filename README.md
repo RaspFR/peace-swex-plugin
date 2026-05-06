@@ -1,6 +1,6 @@
 # swpl — Peace SWEX plugin
 
-Streams Summoners War **Guild Siege** data (battle logs, match-ups, defense decks, member contributions) from your game client to [Peace](https://peace-sigma-ten.vercel.app), so guild leaders can review offense/defense results, win rates, and opponent strategies from a web dashboard.
+Streams Summoners War **Guild Siege** data (battle logs, match-ups, defense decks, member contributions) from your game client to [Peace](https://www.swpeace.fr), so guild leaders can review offense/defense results, win rates, and opponent strategies from a web dashboard.
 
 Runs as a plugin for [sw-exporter (SWEX)](https://github.com/Xzandro/sw-exporter).
 
@@ -26,7 +26,7 @@ The plugin **never uploads raw character data, runes, or artifacts** — it only
 
 1. **Install SWEX** if you don't have it yet: <https://github.com/Xzandro/sw-exporter/releases>
 2. **Generate an API token**
-   - Ask your guild's Peace administrator to visit `https://peace-sigma-ten.vercel.app/admin/tokens`
+   - Ask your guild's Peace administrator to visit `https://www.swpeace.fr/admin/tokens`
    - Create a new token for your guild, copy the token (shown once)
 3. **Download `swpl.asar`** from the [latest release](https://github.com/RaspFR/peace-swex-plugin/releases/latest)
 4. **Drop** `swpl.asar` into the SWEX plugins folder:
@@ -38,14 +38,14 @@ The plugin **never uploads raw character data, runes, or artifacts** — it only
    - `Peace ingest URL` — leave the default unless your Peace deployment is self-hosted
 7. Open Summoners War, go to the siege screen — SWEX will log each upload in its console.
 
-You're done. Siege data shows up at `peace-sigma-ten.vercel.app/guild-management → Siege → Battles`.
+You're done. Siege data shows up at `www.swpeace.fr/guild-management → Siege → Battles`.
 
 ## Configuration
 
 | Setting                                       | Default                                                                        | Description                                                                                   |
 | --------------------------------------------- | ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------- |
 | `enabled`                                     | `true`                                                                         | Toggle the plugin without uninstalling it                                                     |
-| `Peace ingest URL`                            | `https://peace-sigma-ten.vercel.app/api/guild/siege/battles/import`            | The Peace endpoint to post to                                                                 |
+| `Peace ingest URL`                            | `https://www.swpeace.fr/api/guild/siege/battles/import`                        | The Peace endpoint to post to                                                                 |
 | `Peace API token`                             | _(empty)_                                                                      | Your guild's API token — generated via `/admin/tokens` on Peace                               |
 | `Verbose log (every siege API call)`          | `false`                                                                        | Enables debug-level logs for skipped duplicates                                               |
 
