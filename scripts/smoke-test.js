@@ -223,6 +223,36 @@ async function main() {
       }
     }
 
+    // Inventory snapshot (user-scoped) should route to /api/user/storage/import.
+    // The Com2uS command uses a lowercase prefix (`getUnitStorageList`); the
+    // plugin must still strip it and capitalize for the ingest type.
+    const storageReq = { command: 'getUnitStorageList', wizard_id: 79141 };
+    const storageResp = {
+      command: 'getUnitStorageList',
+      ret_code: 0,
+      unit_storage_list: [
+        { unit_master_id: 10101, class: 3, quantity: 50 },
+        { unit_master_id: 11001, class: 3, quantity: 406 },
+      ],
+    };
+    proxy.emit('getUnitStorageList', Object.freeze(storageReq), Object.freeze(storageResp));
+    await new Promise((r) => setTimeout(r, 300));
+    if (received.length !== 4) {
+      errors.push(`Storage upload missing: got ${received.length} uploads, expected 4`);
+    } else {
+      const storageHit = received[3];
+      console.log(`[smoke] storage url=${storageHit.url} type=${storageHit.body.type}`);
+      if (storageHit.url !== '/api/user/storage/import') {
+        errors.push(`Storage url wrong: ${storageHit.url}`);
+      }
+      if (storageHit.body.type !== 'UnitStorageList') {
+        errors.push(`Storage type wrong: ${storageHit.body.type}`);
+      }
+      if (!Array.isArray(storageHit.body.raw && storageHit.body.raw.unit_storage_list)) {
+        errors.push('Storage payload missing raw.unit_storage_list[]');
+      }
+    }
+
     if (errors.length > 0) {
       console.error('[smoke] FAILED:');
       for (const e of errors) console.error('  -', e);

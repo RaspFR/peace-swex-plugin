@@ -2,7 +2,7 @@
 
 const axios = require('axios');
 
-const version = '1.2.0';
+const version = '1.3.0';
 const pluginName = 'swpl';
 
 // Commands we listen to. Each one maps 1:1 to an `ingest` type on the Peace
@@ -32,17 +32,36 @@ const BATTLE_COMMANDS = [
 // Peace side. Today only WGB defense uses this channel.
 const USER_COMMANDS = ['GetServerGuildWarDefenseDeckList'];
 
-// Derive the per-user ingest URL from the configured (guild-siege) one
-// by replacing the path. We accept either the legacy fully-qualified URL
-// or just an origin/base — both are common in user configs.
-function deriveUserApiUrl(apiUrl) {
+// Per-user inventory commands. Same auth + same dedup as USER_COMMANDS,
+// just a different ingest endpoint. We isolate them because the route
+// computation diverges (different path on the Peace side).
+//
+// `getUnitStorageList` is the one Com2uS call that returns the full
+// inventory aggregated by unit_master_id across every collection slot
+// (active roster + Monster Storage + Summoned/Normal Sealed Shrines).
+// SWEX' own export only ships the first two, so this stream is the only
+// way to see what's locked away in the shrines.
+const STORAGE_COMMANDS = ['getUnitStorageList'];
+
+// Build the base origin from the configured ingest URL. Accepts either a
+// fully-qualified guild ingest URL (the legacy default) or just an origin —
+// both are common in user configs.
+function deriveOrigin(apiUrl) {
   if (!apiUrl || typeof apiUrl !== 'string') return null;
-  // Strip a trailing siege ingest path if present, then append the user
-  // ingest path. Anything else (origin-only or unknown path) gets the
-  // user path appended directly.
   const stripped = apiUrl.replace(/\/api\/guild\/siege\/battles\/import\/?$/, '');
-  const base = stripped.replace(/\/+$/, '');
-  return `${base}/api/user/wgb-defense/import`;
+  return stripped.replace(/\/+$/, '');
+}
+
+// Derive the per-user WGB ingest URL.
+function deriveUserApiUrl(apiUrl) {
+  const base = deriveOrigin(apiUrl);
+  return base ? `${base}/api/user/wgb-defense/import` : null;
+}
+
+// Derive the per-user unit-storage ingest URL.
+function deriveStorageApiUrl(apiUrl) {
+  const base = deriveOrigin(apiUrl);
+  return base ? `${base}/api/user/storage/import` : null;
 }
 
 // Strip the `get`/`Get` prefix and any trailing `_vN` version tag to get the
@@ -260,6 +279,33 @@ module.exports = {
           return;
         }
         this.upload(proxy, config, req, command, rawCopy, userUrl);
+      });
+    }
+
+    // Inventory snapshot. Routed to /api/user/storage/import. We listen on
+    // the same Com2uS hook surface; this one fires every time the player
+    // opens the monster collection screen, so dedup matters more here than
+    // on the WGB channel.
+    for (const command of STORAGE_COMMANDS) {
+      proxy.on(command, (req, resp) => {
+        const c = cfg();
+        if (!c.enabled) return;
+        if (!resp || resp.ret_code !== 0) return;
+
+        const rawCopy = structuredClone(resp);
+        if (isDuplicate(command, rawCopy)) return;
+
+        const storageUrl = deriveStorageApiUrl(c.apiUrl);
+        if (!storageUrl) {
+          proxy.log({
+            type: 'warning',
+            source: 'plugin',
+            name: pluginName,
+            message: `${command}: cannot derive storage ingest URL from apiUrl — skipped.`,
+          });
+          return;
+        }
+        this.upload(proxy, config, req, command, rawCopy, storageUrl);
       });
     }
   },
