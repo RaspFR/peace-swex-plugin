@@ -2,7 +2,7 @@
 
 const axios = require('axios');
 
-const version = '1.1.1';
+const version = '1.2.0';
 const pluginName = 'swpl';
 
 // Commands we listen to. Each one maps 1:1 to an `ingest` type on the Peace
@@ -25,6 +25,25 @@ const BATTLE_COMMANDS = [
   'GetGuildSiegeMemberStatSeasonList',
   'GetGuildSiegeStatusInfo',
 ];
+
+// Per-user commands routed to a different endpoint than the guild-siege
+// ingest. The plugin uses the same Bearer token (verifyApiToken accepts
+// both guild and user tokens) but writes to a user-scoped table on the
+// Peace side. Today only WGB defense uses this channel.
+const USER_COMMANDS = ['GetServerGuildWarDefenseDeckList'];
+
+// Derive the per-user ingest URL from the configured (guild-siege) one
+// by replacing the path. We accept either the legacy fully-qualified URL
+// or just an origin/base — both are common in user configs.
+function deriveUserApiUrl(apiUrl) {
+  if (!apiUrl || typeof apiUrl !== 'string') return null;
+  // Strip a trailing siege ingest path if present, then append the user
+  // ingest path. Anything else (origin-only or unknown path) gets the
+  // user path appended directly.
+  const stripped = apiUrl.replace(/\/api\/guild\/siege\/battles\/import\/?$/, '');
+  const base = stripped.replace(/\/+$/, '');
+  return `${base}/api/user/wgb-defense/import`;
+}
 
 // Strip the `get`/`Get` prefix and any trailing `_vN` version tag to get the
 // ingest `type` expected by the Peace API.
@@ -214,14 +233,40 @@ module.exports = {
           return;
         }
 
-        this.upload(proxy, config, req, command, rawCopy);
+        this.upload(proxy, config, req, command, rawCopy, c.apiUrl);
+      });
+    }
+
+    // User-scoped commands route to a different endpoint derived from the
+    // configured siege ingest URL. Same token, same dedup, just a
+    // different destination.
+    for (const command of USER_COMMANDS) {
+      proxy.on(command, (req, resp) => {
+        const c = cfg();
+        if (!c.enabled) return;
+        if (!resp || resp.ret_code !== 0) return;
+
+        const rawCopy = structuredClone(resp);
+        if (isDuplicate(command, rawCopy)) return;
+
+        const userUrl = deriveUserApiUrl(c.apiUrl);
+        if (!userUrl) {
+          proxy.log({
+            type: 'warning',
+            source: 'plugin',
+            name: pluginName,
+            message: `${command}: cannot derive user ingest URL from apiUrl — skipped.`,
+          });
+          return;
+        }
+        this.upload(proxy, config, req, command, rawCopy, userUrl);
       });
     }
   },
 
-  async upload(proxy, config, req, command, rawResp) {
+  async upload(proxy, config, req, command, rawResp, targetUrl) {
     const c = config.Config.Plugins[pluginName] || {};
-    if (!c.apiUrl || !c.apiToken) {
+    if (!targetUrl || !c.apiToken) {
       proxy.log({
         type: 'warning',
         source: 'plugin',
@@ -243,7 +288,7 @@ module.exports = {
     };
 
     try {
-      const res = await axios.post(c.apiUrl, payload, {
+      const res = await axios.post(targetUrl, payload, {
         headers: {
           Authorization: `Bearer ${c.apiToken}`,
           'Content-Type': 'application/json',

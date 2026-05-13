@@ -199,6 +199,30 @@ async function main() {
       errors.push(`dedup failed: got ${received.length} uploads, expected 2`);
     }
 
+    // WGB defense (user-scoped) should route to /api/user/wgb-defense/import,
+    // derived from the configured siege URL.
+    const wgbReq = { command: 'GetServerGuildWarDefenseDeckList', wizard_id: 79141 };
+    const wgbResp = {
+      command: 'GetServerGuildWarDefenseDeckList',
+      ret_code: 0,
+      deck_list: [{ round: 1, unit_id_list: [1, 2, 3], deck_id: 99 }],
+      round_unit_list: [[{ pos_id: 1, unit_info: { unit_id: 1, runes: [], artifacts: [] } }]],
+    };
+    proxy.emit('GetServerGuildWarDefenseDeckList', Object.freeze(wgbReq), Object.freeze(wgbResp));
+    await new Promise((r) => setTimeout(r, 300));
+    if (received.length !== 3) {
+      errors.push(`WGB upload missing: got ${received.length} uploads, expected 3`);
+    } else {
+      const wgbHit = received[2];
+      console.log(`[smoke] WGB url=${wgbHit.url} type=${wgbHit.body.type}`);
+      if (wgbHit.url !== '/api/user/wgb-defense/import') {
+        errors.push(`WGB url wrong: ${wgbHit.url}`);
+      }
+      if (wgbHit.body.type !== 'ServerGuildWarDefenseDeckList') {
+        errors.push(`WGB type wrong: ${wgbHit.body.type}`);
+      }
+    }
+
     if (errors.length > 0) {
       console.error('[smoke] FAILED:');
       for (const e of errors) console.error('  -', e);
