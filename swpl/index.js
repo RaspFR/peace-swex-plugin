@@ -2,7 +2,7 @@
 
 const axios = require('axios');
 
-const version = '1.3.0';
+const version = '1.4.0';
 const pluginName = 'swpl';
 
 // Commands we listen to. Each one maps 1:1 to an `ingest` type on the Peace
@@ -24,6 +24,9 @@ const BATTLE_COMMANDS = [
   'GetGuildSiegeRankingInfo',
   'GetGuildSiegeMemberStatSeasonList',
   'GetGuildSiegeStatusInfo',
+  // Fires when a member opens a tower in game (any guild's): the trio of
+  // every defense on it. Feeds the defenses panel of the live map.
+  'GetGuildSiegeBaseDefenseUnitList',
 ];
 
 // Per-user commands routed to a different endpoint than the guild-siege
@@ -155,6 +158,12 @@ function extractMatchId(command, resp) {
       }
     }
   }
+  // A base defense list carries it on its beaten decks, when there are any.
+  const statusList = resp.defense_deck_status_list;
+  if (Array.isArray(statusList)) {
+    const withId = statusList.find((st) => st && st.match_id != null);
+    if (withId) return String(withId.match_id);
+  }
   // Summary_v2 ships the match id only inside guild_list[].match_id.
   const guildList = resp.guild_list;
   if (Array.isArray(guildList) && guildList.length > 0 && guildList[0].match_id != null) {
@@ -227,6 +236,10 @@ module.exports = {
 
         // Clone because SWEX deep-freezes req/resp.
         const rawCopy = structuredClone(resp);
+        // The base defense list names its base only in the request.
+        if (req && req.base_number != null && rawCopy.base_number == null) {
+          rawCopy.base_number = req.base_number;
+        }
 
         // Update context from any payload that carries a match id,
         // so subsequent Contribute/DefenseDeck calls land on the right match.
