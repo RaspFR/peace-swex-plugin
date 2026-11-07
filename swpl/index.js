@@ -2,7 +2,7 @@
 
 const axios = require('axios');
 
-const version = '1.4.0';
+const version = '1.5.0';
 const pluginName = 'swpl';
 
 // Commands we listen to. Each one maps 1:1 to an `ingest` type on the Peace
@@ -46,6 +46,13 @@ const USER_COMMANDS = ['GetServerGuildWarDefenseDeckList'];
 // way to see what's locked away in the shrines.
 const STORAGE_COMMANDS = ['getUnitStorageList'];
 
+// Dimension Arena season (Peace › Arena › Dimensional Arena). Fires every time
+// the player opens the arena lobby: the season's 190-monster pool with its
+// preset builds, the player's summons, earned runes and defense. Per-user,
+// same token and dedup as the storage stream, its own endpoint. The response
+// carries no session key (that lives in the request, which is never sent).
+const ARENA_COMMANDS = ['dimensionarena_getSeasonInfo'];
+
 // Build the base origin from the configured ingest URL. Accepts either a
 // fully-qualified guild ingest URL (the legacy default) or just an origin —
 // both are common in user configs.
@@ -65,6 +72,12 @@ function deriveUserApiUrl(apiUrl) {
 function deriveStorageApiUrl(apiUrl) {
   const base = deriveOrigin(apiUrl);
   return base ? `${base}/api/user/storage/import` : null;
+}
+
+// Derive the per-user Dimension Arena ingest URL.
+function deriveArenaApiUrl(apiUrl) {
+  const base = deriveOrigin(apiUrl);
+  return base ? `${base}/api/user/dimension-arena/import` : null;
 }
 
 // Strip the `get`/`Get` prefix and any trailing `_vN` version tag to get the
@@ -191,7 +204,7 @@ module.exports = {
   },
   defaultConfigDetails: {
     apiUrl: { label: 'Peace ingest URL', type: 'input' },
-    apiToken: { label: 'Peace API token (from /admin/tokens)', type: 'input' },
+    apiToken: { label: 'Peace API token (Peace › Profile › SWEX plugin token)', type: 'input' },
     debugLog: { label: 'Verbose log (every siege API call)' },
   },
 
@@ -321,6 +334,32 @@ module.exports = {
         this.upload(proxy, config, req, command, rawCopy, storageUrl);
       });
     }
+
+    // Dimension Arena season. Routed to /api/user/dimension-arena/import.
+    // Peace keeps only the latest capture per wizard, so dedup is enough to
+    // stop the lobby's re-fires from re-posting the same 580 KB.
+    for (const command of ARENA_COMMANDS) {
+      proxy.on(command, (req, resp) => {
+        const c = cfg();
+        if (!c.enabled) return;
+        if (!resp || resp.ret_code !== 0) return;
+
+        const rawCopy = structuredClone(resp);
+        if (isDuplicate(command, rawCopy)) return;
+
+        const arenaUrl = deriveArenaApiUrl(c.apiUrl);
+        if (!arenaUrl) {
+          proxy.log({
+            type: 'warning',
+            source: 'plugin',
+            name: pluginName,
+            message: `${command}: cannot derive arena ingest URL from apiUrl — skipped.`,
+          });
+          return;
+        }
+        this.upload(proxy, config, req, command, rawCopy, arenaUrl);
+      });
+    }
   },
 
   async upload(proxy, config, req, command, rawResp, targetUrl) {
@@ -363,6 +402,9 @@ module.exports = {
         body.battlesUpserted ? `battles=${body.battlesUpserted}` : null,
         body.contributionsUpserted ? `contribs=${body.contributionsUpserted}` : null,
         body.decksUpserted ? `decks=${body.decksUpserted}` : null,
+        body.seasonId ? `arena season ${body.seasonId}` : null,
+        body.monsters != null && body.seasonId ? `monsters=${body.monsters}` : null,
+        body.runes != null && body.seasonId ? `runes=${body.runes}` : null,
       ]
         .filter(Boolean)
         .join(' ');
@@ -386,7 +428,7 @@ module.exports = {
           type: 'error',
           source: 'plugin',
           name: pluginName,
-          message: `Peace rejected the API token. Check /admin/tokens on Peace.`,
+          message: `Peace rejected the API token. Generate a new one in Peace › Profile › SWEX plugin token.`,
         });
         return;
       }

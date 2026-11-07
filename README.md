@@ -32,8 +32,9 @@ The plugin listens to the game's API responses while SWEX runs as a proxy and re
 | ---------------------------------- | ------------------------------ | ----------------------------------------------------------------- |
 | `GetServerGuildWarDefenseDeckList` | `/api/user/wgb-defense/import` | Your World Guild Battle defense (v1.2.0+)                         |
 | `getUnitStorageList`               | `/api/user/storage/import`     | Your monster count per species, Sealed Shrines included (v1.3.0+) |
+| `dimensionarena_getSeasonInfo`     | `/api/user/dimension-arena/import` | Your Dimensional Arena season: summons, preset builds, earned runes, defense (v1.5.0+) |
 
-Both user endpoints are derived from the configured ingest URL, so a self-hosted Peace only needs that one setting.
+All user endpoints are derived from the configured ingest URL, so a self-hosted Peace only needs that one setting.
 
 ## Installation
 
@@ -69,7 +70,7 @@ If you prefer to update manually, grab the latest `swpl.asar` from [Releases](ht
 
 ## Privacy
 
-- **What leaves your machine**: only the JSON responses of the commands listed above, plus your wizard id and guild id for context. The plugin never uploads your runes, artifacts or full account export: the World Guild Battle defense and the monster storage are the only account data it sends, and only with a personal token.
+- **What leaves your machine**: only the JSON responses of the commands listed above, plus your wizard id and guild id for context. The plugin never uploads your runes, artifacts or full account export: the World Guild Battle defense, the monster storage and the Dimensional Arena season are the only account data it sends, and only with a personal token.
 - **Where it goes**: only the Peace URL you configured. No third-party analytics, no tracking.
 - **Authentication**: every upload carries your API token. Revoking it (from your Peace profile, or `/admin/tokens` for admins) stops the plugin from posting, immediately.
 

@@ -253,6 +253,37 @@ async function main() {
       }
     }
 
+    // Dimension Arena season (user-scoped) should route to
+    // /api/user/dimension-arena/import with the type Peace expects.
+    const arenaReq = { command: 'dimensionarena_getSeasonInfo', wizard_id: 79141, session_key: 'secret' };
+    const arenaResp = {
+      command: 'dimensionarena_getSeasonInfo',
+      ret_code: 0,
+      wizard_id: 79141,
+      schedule_info: { season_id: 1 },
+      default_unit_list: [],
+      unit_list: [],
+      rune_list: [],
+    };
+    const before = received.length;
+    proxy.emit('dimensionarena_getSeasonInfo', Object.freeze(arenaReq), Object.freeze(arenaResp));
+    await new Promise((r) => setTimeout(r, 300));
+    if (received.length !== before + 1) {
+      errors.push(`Arena upload missing: got ${received.length - before} uploads, expected 1`);
+    } else {
+      const arenaHit = received[received.length - 1];
+      console.log(`[smoke] arena url=${arenaHit.url} type=${arenaHit.body.type}`);
+      if (arenaHit.url !== '/api/user/dimension-arena/import') {
+        errors.push(`Arena url wrong: ${arenaHit.url}`);
+      }
+      if (arenaHit.body.type !== 'Dimensionarena_getSeasonInfo') {
+        errors.push(`Arena type wrong: ${arenaHit.body.type}`);
+      }
+      if (JSON.stringify(arenaHit.body).includes('secret')) {
+        errors.push('Arena payload leaks the request session key');
+      }
+    }
+
     if (errors.length > 0) {
       console.error('[smoke] FAILED:');
       for (const e of errors) console.error('  -', e);
