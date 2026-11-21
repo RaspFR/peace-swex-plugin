@@ -6,7 +6,7 @@ const { promisify } = require('util');
 
 const gzip = promisify(zlib.gzip);
 
-const version = '1.6.0';
+const version = '1.6.1';
 const pluginName = 'swpl';
 
 // Commands we listen to. Each one maps 1:1 to an `ingest` type on the Peace
@@ -96,10 +96,11 @@ const ACCOUNT_STRIPPED_KEYS = new Set([
   'battle_option_list',
 ]);
 
-// Peace refuses a login within 10 minutes of the last stored one (game
-// reconnections fire a login each). Skip them here too, per wizard, so the
-// ~400 KB body is not sent for nothing.
-const ACCOUNT_MIN_INTERVAL_MS = 10 * 60 * 1000;
+// At most one account sync every 30 minutes per wizard. Game reconnections
+// fire a login each, and every request that reaches Peace wakes its database
+// (billed by the time it is awake), so the plugin holds back longer than
+// Peace's own 10-minute guard: a skipped login here costs nothing at all.
+const ACCOUNT_MIN_INTERVAL_MS = 30 * 60 * 1000;
 const lastAccountSync = new Map(); // wizard_id -> ms of the last stored sync
 
 function withoutChannelUid(obj) {
@@ -511,7 +512,7 @@ module.exports = {
     }
     const last = lastAccountSync.get(wizardId);
     if (last && Date.now() - last < ACCOUNT_MIN_INTERVAL_MS) {
-      if (c.debugLog) log('debug', 'Account auto-sync: synced less than 10 minutes ago, skipped.');
+      if (c.debugLog) log('debug', 'Account auto-sync: synced less than 30 minutes ago, skipped.');
       return;
     }
 
@@ -570,7 +571,7 @@ module.exports = {
       const status = err.response && err.response.status;
       const data = (err.response && err.response.data) || {};
       // A refusal will not change on the next reconnection: wait the same
-      // 10 minutes before sending 400 KB again.
+      // 30 minutes before sending 400 KB again.
       if (status === 401 || status === 403 || status === 409) {
         lastAccountSync.set(wizardId, Date.now());
       }

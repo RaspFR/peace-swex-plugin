@@ -357,7 +357,7 @@ async function main() {
     proxy.emit('HubUserLogin', Object.freeze(loginReq), Object.freeze(loginResp));
     await new Promise((r) => setTimeout(r, 300));
     if (received.length !== beforeLogin) {
-      errors.push('Account sync re-sent within the 10-minute window');
+      errors.push('Account sync re-sent within the 30-minute window');
     }
 
     // An incomplete login (no building_list) is never sent.
