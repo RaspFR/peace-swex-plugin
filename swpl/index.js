@@ -102,14 +102,54 @@ const ACCOUNT_STRIPPED_KEYS = new Set([
 const ACCOUNT_MIN_INTERVAL_MS = 10 * 60 * 1000;
 const lastAccountSync = new Map(); // wizard_id -> ms of the last stored sync
 
-// Shallow copy of the login response without the stripped keys. No deep clone:
-// it is only serialized, and SWEX' frozen objects serialize fine.
+function withoutChannelUid(obj) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj) || !('channel_uid' in obj)) return obj;
+  const { channel_uid: _drop, ...rest } = obj;
+  return rest;
+}
+
+// The guild block without the Hive account ids (`channel_uid` on every member,
+// `master_channel_uid` on the guild).
+function trimGuild(guild) {
+  if (!guild || typeof guild !== 'object') return guild;
+  const out = { ...guild };
+  if (guild.guild_info && typeof guild.guild_info === 'object') {
+    const { master_channel_uid: _drop, ...info } = guild.guild_info;
+    out.guild_info = info;
+  }
+  const members = guild.guild_members;
+  if (Array.isArray(members)) {
+    out.guild_members = members.map(withoutChannelUid);
+  } else if (members && typeof members === 'object') {
+    out.guild_members = {};
+    for (const id of Object.keys(members)) out.guild_members[id] = withoutChannelUid(members[id]);
+  }
+  return out;
+}
+
+// Shallow copy of the login response without the stripped keys and Hive ids.
+// No deep clone: it is only serialized, and SWEX' frozen objects serialize fine.
 function trimLogin(resp) {
   const out = {};
   for (const key of Object.keys(resp)) {
-    if (!ACCOUNT_STRIPPED_KEYS.has(key)) out[key] = resp[key];
+    if (ACCOUNT_STRIPPED_KEYS.has(key)) continue;
+    if (key === 'guild') out.guild = trimGuild(resp.guild);
+    else if (key === 'dimension_arena_user_info') out[key] = withoutChannelUid(resp[key]);
+    else out[key] = resp[key];
   }
   return out;
+}
+
+// A whole account and the token only ever travel over https (plain http is
+// accepted for a local Peace only).
+function isSafeTarget(url) {
+  try {
+    const u = new URL(url);
+    if (u.protocol === 'https:') return true;
+    return u.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname);
+  } catch {
+    return false;
+  }
 }
 
 // Build the base origin from the configured ingest URL. Accepts either a
@@ -455,6 +495,10 @@ module.exports = {
       log('warning', 'Account auto-sync: missing apiUrl or apiToken — open Plugins settings.');
       return;
     }
+    if (!isSafeTarget(targetUrl)) {
+      log('error', 'Account auto-sync: the Peace ingest URL must use https, nothing was sent.');
+      return;
+    }
     const wizardId = resp.wizard_info && resp.wizard_info.wizard_id;
     // SWEX' own export check: Com2uS sometimes answers a login without part of
     // the account. Peace would refuse it anyway; don't send 400 KB for that.
@@ -525,7 +569,17 @@ module.exports = {
     } catch (err) {
       const status = err.response && err.response.status;
       const data = (err.response && err.response.data) || {};
-      if (status === 401) {
+      // A refusal will not change on the next reconnection: wait the same
+      // 10 minutes before sending 400 KB again.
+      if (status === 401 || status === 403 || status === 409) {
+        lastAccountSync.set(wizardId, Date.now());
+      }
+      if (status === 403 && data.error === 'account_inactive') {
+        log(
+          'error',
+          'Account auto-sync: your Peace account is no longer active in your guild, not synced.'
+        );
+      } else if (status === 401) {
         log(
           'error',
           'Peace rejected the API token. Generate a new one in Peace › Profile › SWEX plugin token.'

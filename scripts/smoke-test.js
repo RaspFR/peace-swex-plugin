@@ -299,6 +299,10 @@ async function main() {
       runes: [{ rune_id: 2 }],
       artifacts: [],
       building_list: [{ building_master_id: 25 }],
+      guild: {
+        guild_info: { guild_id: 121293, name: '=PEACE 2=', master_channel_uid: 9 },
+        guild_members: { 79141: { wizard_id: 79141, wizard_name: 'x', channel_uid: 9 } },
+      },
     };
     const loginReq = { command: 'HubUserLogin' };
     let beforeLogin = received.length;
@@ -337,6 +341,12 @@ async function main() {
           if (!(k in login)) errors.push(`Account payload lost ${k}`);
         }
       }
+      if (login && JSON.stringify(login).includes('channel_uid')) {
+        errors.push('Account payload still carries a Hive channel_uid');
+      }
+      if (login && !(login.guild && login.guild.guild_members && login.guild.guild_members['79141'])) {
+        errors.push('Account payload lost the guild members');
+      }
       if (JSON.stringify(syncHit.body).includes('secret-session')) {
         errors.push('Account payload leaks the session key');
       }
@@ -357,6 +367,19 @@ async function main() {
     await new Promise((r) => setTimeout(r, 300));
     if (received.length !== beforeLogin) {
       errors.push('Incomplete login was uploaded');
+    }
+
+    // A non-local http URL never receives the account (nor the token).
+    const savedUrl = config.Config.Plugins[plugin.pluginName].apiUrl;
+    config.Config.Plugins[plugin.pluginName].apiUrl = 'http://peace.example/api/guild/siege/battles/import';
+    const plainLogin = { ...loginResp, wizard_info: { wizard_id: 777, wizard_name: 'y' } };
+    const beforePlain = received.length;
+    proxy.emit('HubUserLogin', Object.freeze(loginReq), Object.freeze(plainLogin));
+    await new Promise((r) => setTimeout(r, 300));
+    config.Config.Plugins[plugin.pluginName].apiUrl = savedUrl;
+    if (received.length !== beforePlain) errors.push('Account sent over plain http');
+    if (!proxy.logs.some((l) => /must use https/.test(l.message))) {
+      errors.push('No log for the refused http URL');
     }
 
     if (errors.length > 0) {
