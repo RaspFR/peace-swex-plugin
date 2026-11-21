@@ -1,8 +1,12 @@
 'use strict';
 
 const axios = require('axios');
+const zlib = require('zlib');
+const { promisify } = require('util');
 
-const version = '1.5.0';
+const gzip = promisify(zlib.gzip);
+
+const version = '1.6.0';
 const pluginName = 'swpl';
 
 // Commands we listen to. Each one maps 1:1 to an `ingest` type on the Peace
@@ -53,6 +57,61 @@ const STORAGE_COMMANDS = ['getUnitStorageList'];
 // carries no session key (that lives in the request, which is never sent).
 const ARENA_COMMANDS = ['dimensionarena_getSeasonInfo'];
 
+// Account auto-sync (Peace › your account, kept up to date). Off until the
+// player ticks "Auto-sync my account": `HubUserLogin` is the game's login
+// response, i.e. exactly what a SWEX JSON export contains, so every game login
+// refreshes the player's account on Peace without a manual upload.
+const ACCOUNT_COMMANDS = ['HubUserLogin'];
+
+// Keys dropped before the login response leaves the machine: the game session,
+// the account/device block, other players' data and heavy blocks Peace never
+// reads. Mirrors Peace's lib/swex/sanitizeSwex.ts (which applies them again on
+// arrival, so this list only has to be a subset of it).
+const ACCOUNT_STRIPPED_KEYS = new Set([
+  // secrets
+  'session_key',
+  'session_key_node',
+  'account_info',
+  // other players / payments
+  'friend_list',
+  'invite_buddy',
+  'webcash_info',
+  'push_noti_status_list',
+  // unused by Peace
+  'shop_info',
+  'obstacle_list',
+  'draft_unit_list',
+  'rtpvp_season_npc_list',
+  'deck_recent_list',
+  'scenario_list',
+  'quest_rewarded',
+  'quest_active',
+  'event_id_list',
+  'notice_info',
+  'notice_popup_info_list',
+  'daily_reward_list',
+  'homunculus_skill_select_ratio_info',
+  'inventory_open_info',
+  'mob_costume_part_list',
+  'battle_option_list',
+]);
+
+// Peace refuses a login within 10 minutes of the last stored one (game
+// reconnections fire a login each). Skip them here too, per wizard, so the
+// ~400 KB body is not sent for nothing.
+const ACCOUNT_MIN_INTERVAL_MS = 10 * 60 * 1000;
+const lastAccountSync = new Map(); // wizard_id -> ms of the last stored sync
+
+// Shallow copy of the login response without the stripped keys. No deep clone:
+// it is only serialized, and SWEX' frozen objects serialize fine.
+function trimLogin(resp) {
+  const out = {};
+  for (const key of Object.keys(resp)) {
+    if (!ACCOUNT_STRIPPED_KEYS.has(key)) out[key] = resp[key];
+  }
+  return out;
+}
+
 // Build the base origin from the configured ingest URL. Accepts either a
 // fully-qualified guild ingest URL (the legacy default) or just an origin —
 // both are common in user configs.
@@ -78,6 +137,12 @@ function deriveStorageApiUrl(apiUrl) {
 function deriveArenaApiUrl(apiUrl) {
   const base = deriveOrigin(apiUrl);
   return base ? `${base}/api/user/dimension-arena/import` : null;
+}
+
+// Derive the per-user account auto-sync URL.
+function deriveAccountSyncUrl(apiUrl) {
+  const base = deriveOrigin(apiUrl);
+  return base ? `${base}/api/user/account/sync` : null;
 }
 
 // Strip the `get`/`Get` prefix and any trailing `_vN` version tag to get the
@@ -187,7 +252,8 @@ function extractMatchId(command, resp) {
 
 module.exports = {
   pluginName,
-  pluginDescription: 'Streams guild siege data to Peace (www.swpeace.fr).',
+  pluginDescription:
+    'Streams guild siege data to Peace (www.swpeace.fr). Optionally keeps your Peace account up to date at every game login.',
   version,
   autoUpdate: {
     // GitHub serves raw files over HTTPS from raw.githubusercontent.com and
@@ -200,11 +266,16 @@ module.exports = {
     enabled: true,
     apiUrl: 'https://www.swpeace.fr/api/guild/siege/battles/import',
     apiToken: '',
+    autoSyncAccount: false,
     debugLog: false,
   },
   defaultConfigDetails: {
     apiUrl: { label: 'Peace ingest URL', type: 'input' },
     apiToken: { label: 'Peace API token (Peace › Profile › SWEX plugin token)', type: 'input' },
+    autoSyncAccount: {
+      label:
+        'Auto-sync my account: update my monsters, runes and artifacts on Peace at every game login (personal token required)',
+    },
     debugLog: { label: 'Verbose log (every siege API call)' },
   },
 
@@ -335,6 +406,16 @@ module.exports = {
       });
     }
 
+    // Account auto-sync, opt-in. Routed to /api/user/account/sync.
+    for (const command of ACCOUNT_COMMANDS) {
+      proxy.on(command, (req, resp) => {
+        const c = cfg();
+        if (!c.enabled || !c.autoSyncAccount) return;
+        if (!resp || resp.ret_code !== 0) return;
+        this.uploadAccount(proxy, config, resp);
+      });
+    }
+
     // Dimension Arena season. Routed to /api/user/dimension-arena/import.
     // Peace keeps only the latest capture per wizard, so dedup is enough to
     // stop the lobby's re-fires from re-posting the same 580 KB.
@@ -359,6 +440,120 @@ module.exports = {
         }
         this.upload(proxy, config, req, command, rawCopy, arenaUrl);
       });
+    }
+  },
+
+  // Account auto-sync: the login response, trimmed and gzipped, to
+  // /api/user/account/sync. Peace answers 200 with `skipped` when it already
+  // has a newer or very recent export, 409 when this game account is not the
+  // one linked to the Peace account, 422 when the login came back incomplete.
+  async uploadAccount(proxy, config, resp) {
+    const c = config.Config.Plugins[pluginName] || {};
+    const log = (type, message) => proxy.log({ type, source: 'plugin', name: pluginName, message });
+    const targetUrl = deriveAccountSyncUrl(c.apiUrl);
+    if (!targetUrl || !c.apiToken) {
+      log('warning', 'Account auto-sync: missing apiUrl or apiToken — open Plugins settings.');
+      return;
+    }
+    const wizardId = resp.wizard_info && resp.wizard_info.wizard_id;
+    // SWEX' own export check: Com2uS sometimes answers a login without part of
+    // the account. Peace would refuse it anyway; don't send 400 KB for that.
+    if (!wizardId || !resp.building_list || !Array.isArray(resp.unit_list)) {
+      log(
+        'warning',
+        'Account auto-sync: incomplete login data, skipped (it fixes itself on the next login).'
+      );
+      return;
+    }
+    const last = lastAccountSync.get(wizardId);
+    if (last && Date.now() - last < ACCOUNT_MIN_INTERVAL_MS) {
+      if (c.debugLog) log('debug', 'Account auto-sync: synced less than 10 minutes ago, skipped.');
+      return;
+    }
+
+    let rawGz;
+    try {
+      const json = JSON.stringify(trimLogin(resp));
+      rawGz = (await gzip(Buffer.from(json, 'utf-8'))).toString('base64');
+    } catch (err) {
+      log('error', `Account auto-sync: could not pack the login data (${err.message}).`);
+      return;
+    }
+
+    try {
+      const res = await axios.post(
+        targetUrl,
+        {
+          version: 1,
+          type: 'HubUserLogin',
+          wizardId,
+          capturedAt: Math.floor(Date.now() / 1000),
+          rawGz,
+        },
+        {
+          headers: { Authorization: `Bearer ${c.apiToken}`, 'Content-Type': 'application/json' },
+          timeout: 60000,
+          maxBodyLength: 8 * 1024 * 1024,
+          validateStatus: (s) => s >= 200 && s < 300,
+        }
+      );
+      const body = res.data || {};
+      if (body.skipped === 'too_soon') {
+        lastAccountSync.set(wizardId, Date.now());
+        log('info', 'Account auto-sync: Peace already has a recent copy, skipped.');
+        return;
+      }
+      if (body.skipped === 'stale') {
+        log('info', 'Account auto-sync: Peace already has a newer copy, skipped.');
+        return;
+      }
+      lastAccountSync.set(wizardId, Date.now());
+      const counts = [
+        body.units != null ? `monsters=${body.units}` : null,
+        body.runes != null ? `runes=${body.runes}` : null,
+        body.artifacts != null ? `artifacts=${body.artifacts}` : null,
+      ]
+        .filter(Boolean)
+        .join(' ');
+      log('success', `Account synced to Peace${counts ? ' · ' + counts : ''}`);
+      if (body.foreignGuild) {
+        log(
+          'warning',
+          'Account auto-sync: this account is in a guild Peace does not track, your guild roster was not updated.'
+        );
+      }
+    } catch (err) {
+      const status = err.response && err.response.status;
+      const data = (err.response && err.response.data) || {};
+      if (status === 401) {
+        log(
+          'error',
+          'Peace rejected the API token. Generate a new one in Peace › Profile › SWEX plugin token.'
+        );
+      } else if (status === 403) {
+        log(
+          'error',
+          'Account auto-sync needs a personal token (Peace › Profile › SWEX plugin token), not a guild token.'
+        );
+      } else if (status === 409 && data.error === 'wizard_unknown') {
+        log(
+          'warning',
+          'Account auto-sync: upload your JSON once on Peace to link this game account, then auto-sync takes over.'
+        );
+      } else if (status === 409 && data.error === 'wizard_mismatch') {
+        log(
+          'warning',
+          'Account auto-sync: this game account is not the one linked to your Peace account, not synced.'
+        );
+      } else if (status === 422) {
+        log(
+          'warning',
+          'Account auto-sync: incomplete login data, Peace kept your previous copy (it fixes itself on the next login).'
+        );
+      } else {
+        const detail = data.message || data.error || err.message || 'unknown error';
+        log('error', `Account auto-sync failed${status ? ` (HTTP ${status})` : ''}: ${detail}`);
+      }
     }
   },
 

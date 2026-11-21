@@ -284,6 +284,81 @@ async function main() {
       }
     }
 
+    // Account auto-sync: OFF by default, so a login must not upload anything.
+    const loginResp = {
+      command: 'HubUserLogin',
+      ret_code: 0,
+      tvalue: 1795207636,
+      session_key: 'secret-session',
+      session_key_node: 'secret-node',
+      account_info: { channel_uid: 1, did: 2 },
+      friend_list: [{ wizard_id: 2 }],
+      shop_info: { big: true },
+      wizard_info: { wizard_id: 79141, wizard_name: 'smoke-test-wizard' },
+      unit_list: [{ unit_id: 1, runes: [{ rune_id: 1 }] }],
+      runes: [{ rune_id: 2 }],
+      artifacts: [],
+      building_list: [{ building_master_id: 25 }],
+    };
+    const loginReq = { command: 'HubUserLogin' };
+    let beforeLogin = received.length;
+    proxy.emit('HubUserLogin', Object.freeze(loginReq), Object.freeze(loginResp));
+    await new Promise((r) => setTimeout(r, 300));
+    if (received.length !== beforeLogin) {
+      errors.push('HubUserLogin uploaded while autoSyncAccount is off');
+    }
+
+    // Opted in: one upload to /api/user/account/sync, trimmed and gzipped.
+    config.Config.Plugins[plugin.pluginName].autoSyncAccount = true;
+    proxy.emit('HubUserLogin', Object.freeze(loginReq), Object.freeze(loginResp));
+    await new Promise((r) => setTimeout(r, 500));
+    if (received.length !== beforeLogin + 1) {
+      errors.push(`Account sync missing: got ${received.length - beforeLogin} uploads, expected 1`);
+    } else {
+      const syncHit = received[received.length - 1];
+      console.log(`[smoke] account url=${syncHit.url} type=${syncHit.body.type}`);
+      if (syncHit.url !== '/api/user/account/sync') errors.push(`Account url wrong: ${syncHit.url}`);
+      if (syncHit.body.type !== 'HubUserLogin') errors.push(`Account type wrong: ${syncHit.body.type}`);
+      if (syncHit.body.wizardId !== 79141) errors.push(`Account wizardId wrong: ${syncHit.body.wizardId}`);
+      if (syncHit.auth !== 'Bearer test-token') errors.push(`Account auth wrong: ${syncHit.auth}`);
+      let login = null;
+      try {
+        login = JSON.parse(
+          require('node:zlib').gunzipSync(Buffer.from(syncHit.body.rawGz, 'base64')).toString('utf-8')
+        );
+      } catch (e) {
+        errors.push(`Account rawGz unreadable: ${e.message}`);
+      }
+      if (login) {
+        for (const k of ['session_key', 'session_key_node', 'account_info', 'friend_list', 'shop_info']) {
+          if (k in login) errors.push(`Account payload still carries ${k}`);
+        }
+        for (const k of ['wizard_info', 'unit_list', 'runes', 'building_list', 'tvalue']) {
+          if (!(k in login)) errors.push(`Account payload lost ${k}`);
+        }
+      }
+      if (JSON.stringify(syncHit.body).includes('secret-session')) {
+        errors.push('Account payload leaks the session key');
+      }
+    }
+
+    // A reconnection right after must not upload again.
+    beforeLogin = received.length;
+    proxy.emit('HubUserLogin', Object.freeze(loginReq), Object.freeze(loginResp));
+    await new Promise((r) => setTimeout(r, 300));
+    if (received.length !== beforeLogin) {
+      errors.push('Account sync re-sent within the 10-minute window');
+    }
+
+    // An incomplete login (no building_list) is never sent.
+    const { building_list: _drop, ...incomplete } = loginResp;
+    const otherWizard = { ...incomplete, wizard_info: { wizard_id: 5, wizard_name: 'x' } };
+    proxy.emit('HubUserLogin', Object.freeze(loginReq), Object.freeze(otherWizard));
+    await new Promise((r) => setTimeout(r, 300));
+    if (received.length !== beforeLogin) {
+      errors.push('Incomplete login was uploaded');
+    }
+
     if (errors.length > 0) {
       console.error('[smoke] FAILED:');
       for (const e of errors) console.error('  -', e);

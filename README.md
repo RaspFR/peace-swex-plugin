@@ -2,6 +2,8 @@
 
 Streams Summoners War **Guild Siege** data (battle logs, match-ups, defense decks, member contributions) from your game client to [Peace](https://www.swpeace.fr), so guild leaders can review offense/defense results, win rates, and opponent strategies from a web dashboard.
 
+Optionally (v1.6.0+), it also keeps **your Peace account** (monsters, runes, artifacts, relics) up to date every time you open the game, so you never have to upload your JSON by hand again.
+
 Runs as a plugin for [sw-exporter (SWEX)](https://github.com/Xzandro/sw-exporter).
 
 ## What it captures
@@ -33,6 +35,7 @@ The plugin listens to the game's API responses while SWEX runs as a proxy and re
 | `GetServerGuildWarDefenseDeckList` | `/api/user/wgb-defense/import` | Your World Guild Battle defense (v1.2.0+)                         |
 | `getUnitStorageList`               | `/api/user/storage/import`     | Your monster count per species, Sealed Shrines included (v1.3.0+) |
 | `dimensionarena_getSeasonInfo`     | `/api/user/dimension-arena/import` | Your Dimensional Arena season: summons, preset builds, earned runes, defense (v1.5.0+) |
+| `HubUserLogin`                     | `/api/user/account/sync`       | **Only if you tick `Auto-sync my account`.** Your whole account, as in a SWEX JSON export: Peace replaces your uploaded JSON with it (v1.6.0+) |
 
 All user endpoints are derived from the configured ingest URL, so a self-hosted Peace only needs that one setting.
 
@@ -49,9 +52,22 @@ All user endpoints are derived from the configured ingest URL, so a self-hosted 
 6. **Configure** the plugin under `Settings → Plugins → swpl`:
    - `Peace API token` — paste the token you generated in step 2
    - `Peace ingest URL` — leave the default unless your Peace deployment is self-hosted
+   - `Auto-sync my account` — tick it to keep your Peace account up to date at every game login (see [Account auto-sync](#account-auto-sync))
 7. Open Summoners War and go to the siege screen: SWEX logs each upload in its console (`swpl … uploaded`).
 
 You're done. Siege data shows up on Peace under **Siege → Battles**.
+
+## Account auto-sync
+
+With `Auto-sync my account` ticked, every time you open Summoners War the plugin sends your account to Peace, the same data a SWEX JSON export holds. Your monsters, runes, artifacts and relics on Peace are then as fresh as your last login, without uploading anything by hand.
+
+- **Off by default.** Nothing about your account is sent until you tick it.
+- **Personal token only.** A guild token from `/admin/tokens` cannot sync an account.
+- **Upload your JSON once first.** Peace ties your account to your game account on your first manual upload; until then the plugin logs `upload your JSON once on Peace`.
+- **One game account.** A login on another game account (an alt) is refused, never stored over your main one.
+- **At most every 10 minutes.** Reconnections right after a login are skipped (`Peace already has a recent copy`).
+- **Incomplete logins are dropped.** The game sometimes answers a login without part of the account; Peace then keeps your previous copy.
+- **Trimmed before it leaves your machine.** The game session, your device and account identifiers, your friends list and data Peace never reads are removed by the plugin, and again by Peace on arrival. The rest is gzipped (about 400 KB).
 
 ## Configuration
 
@@ -60,6 +76,7 @@ You're done. Siege data shows up on Peace under **Siege → Battles**.
 | `enabled`                            | `true`                                                  | Toggle the plugin without uninstalling it                                                      |
 | `Peace ingest URL`                   | `https://www.swpeace.fr/api/guild/siege/battles/import` | The Peace endpoint to post to                                                                  |
 | `Peace API token`                    | _(empty)_                                               | Your personal token (Peace profile → SWEX plugin token), or a guild token from `/admin/tokens` |
+| `Auto-sync my account`               | `false`                                                 | Send your account to Peace at every game login (personal token required)                       |
 | `Verbose log (every siege API call)` | `false`                                                 | Also logs skipped duplicates and refused game responses                                        |
 
 ## Updating
@@ -70,7 +87,7 @@ If you prefer to update manually, grab the latest `swpl.asar` from [Releases](ht
 
 ## Privacy
 
-- **What leaves your machine**: only the JSON responses of the commands listed above, plus your wizard id and guild id for context. The plugin never uploads your runes, artifacts or full account export: the World Guild Battle defense, the monster storage and the Dimensional Arena season are the only account data it sends, and only with a personal token.
+- **What leaves your machine**: only the JSON responses of the commands listed above, plus your wizard id and guild id for context. Without `Auto-sync my account`, the plugin never uploads your runes, artifacts or full account: the World Guild Battle defense, the monster storage and the Dimensional Arena season are the only account data it sends, and only with a personal token. With it ticked, your account is sent at each login, minus the game session, device and account identifiers, friends list and unused data (see [Account auto-sync](#account-auto-sync)).
 - **Where it goes**: only the Peace URL you configured. No third-party analytics, no tracking.
 - **Authentication**: every upload carries your API token. Revoking it (from your Peace profile, or `/admin/tokens` for admins) stops the plugin from posting, immediately.
 
@@ -81,6 +98,9 @@ If you prefer to update manually, grab the latest `swpl.asar` from [Releases](ht
 | SWEX logs `Peace rejected the API token`                      | Your token was revoked (a newer one was generated, or your guild changed in Peace) or mistyped. Generate a new one from your Peace profile and paste it back in Settings.                                                                                         |
 | SWEX logs `missing apiUrl or apiToken`                        | Open `Settings → Plugins → swpl` and fill both fields.                                                                                                                                                                                                            |
 | SWEX logs `upload failed (HTTP 400): Unknown or missing type` | This plugin version sends a command your Peace deployment does not know yet. Harmless: it is ignored until Peace is updated.                                                                                                                                      |
+| SWEX logs `upload your JSON once on Peace`                    | Account auto-sync needs your Peace account tied to your game account: upload your SWEX JSON once from Peace, the next login syncs on its own.                                                                                                                      |
+| SWEX logs `not the one linked to your Peace account`          | You opened the game on another account than the one on Peace (an alt). It is not synced, on purpose.                                                                                                                                                              |
+| SWEX logs `Peace already has a recent copy`                   | You logged in again less than 10 minutes after the last sync. Nothing to do: the next login after that syncs.                                                                                                                                                     |
 | Nothing gets uploaded                                         | Confirm SWEX is running as proxy (`Start Proxy` button green) and you've actually opened the siege screen in-game.                                                                                                                                                |
 | SWEX does not offer the new version                           | Check `Auto update plugins` is on. Enable `Show Debug Messages` in SWEX settings to see why an update was skipped (for example `file hash does not match`), or install the `.asar` from [Releases](https://github.com/RaspFR/peace-swex-plugin/releases) by hand. |
 | I see a lot of `duplicate payload … skipped` in logs          | That's the dedup cache, working as intended. It silences the small 10-second burst SWEX emits when you re-open a screen.                                                                                                                                          |
