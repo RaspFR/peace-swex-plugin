@@ -100,6 +100,12 @@ async function main() {
   const received = [];
   const { server, url } = await withMockServer((req, body) => {
     received.push({ method: req.method, url: req.url, auth: req.headers.authorization, body });
+    if (req.url === '/api/guild/members/live-sync') {
+      return {
+        status: 200,
+        body: { ok: true, synced: true, joined: ['Newbie'], left: [], renamed: 0, members: 2 },
+      };
+    }
     return { status: 200, body: { ok: true, matchesUpserted: 1, battlesUpserted: 1 } };
   });
 
@@ -381,6 +387,55 @@ async function main() {
     if (!proxy.logs.some((l) => /must use https/.test(l.message))) {
       errors.push('No log for the refused http URL');
     }
+
+    // Live guild roster: GetGuildSiegeParticipationInfo goes to
+    // /api/guild/members/live-sync, reduced to the member list, without Hive ids
+    // or the response's defense decks.
+    const rosterReq = { command: 'GetGuildSiegeParticipationInfo', wizard_id: 79141, session_key: 'secret-roster' };
+    const rosterResp = {
+      command: 'GetGuildSiegeParticipationInfo',
+      ret_code: 0,
+      tvalue: 1795437395,
+      participation_info: { guild_id: 121293, siege_id: 1 },
+      defense_deck_list: [{ deck_id: 1 }],
+      member_info_list: [
+        { guild_id: 121293, wizard_id: 79141, grade: 2, channel_uid: 111, country: 'FR', wizard_name: 'smoke-test-wizard', join_timestamp: 1755537950 },
+        { guild_id: 121293, wizard_id: 77145, grade: 1, channel_uid: 222, country: 'CI', wizard_name: 'Newbie', join_timestamp: 1795435478 },
+      ],
+    };
+    const beforeRoster = received.length;
+    proxy.emit('GetGuildSiegeParticipationInfo', Object.freeze(rosterReq), Object.freeze(rosterResp));
+    await new Promise((r) => setTimeout(r, 300));
+    if (received.length !== beforeRoster + 1) {
+      errors.push(`Roster upload missing: got ${received.length - beforeRoster} uploads, expected 1`);
+    } else {
+      const rosterHit = received[received.length - 1];
+      console.log(`[smoke] roster url=${rosterHit.url} type=${rosterHit.body.type}`);
+      if (rosterHit.url !== '/api/guild/members/live-sync') errors.push(`Roster url wrong: ${rosterHit.url}`);
+      if (rosterHit.body.type !== 'GuildSiegeParticipationInfo') {
+        errors.push(`Roster type wrong: ${rosterHit.body.type}`);
+      }
+      if (rosterHit.body.wizardId !== 79141) errors.push(`Roster wizardId wrong: ${rosterHit.body.wizardId}`);
+      const sent = JSON.stringify(rosterHit.body);
+      for (const leak of ['channel_uid', 'secret-roster', 'defense_deck_list', 'country']) {
+        if (sent.includes(leak)) errors.push(`Roster payload still carries ${leak}`);
+      }
+      const members = rosterHit.body.raw && rosterHit.body.raw.member_info_list;
+      if (!Array.isArray(members) || members.length !== 2 || members[1].wizard_name !== 'Newbie') {
+        errors.push('Roster payload lost the member list');
+      }
+      if (!rosterHit.body.raw || rosterHit.body.raw.participation_info.guild_id !== 121293) {
+        errors.push('Roster payload lost the guild id');
+      }
+    }
+    if (!proxy.logs.some((l) => /Guild roster updated on Peace · \+1 joined \(Newbie\)/.test(l.message))) {
+      errors.push('No log line for the roster sync');
+    }
+    // Opening the siege menu again right after does not send it again.
+    const beforeRosterAgain = received.length;
+    proxy.emit('GetGuildSiegeParticipationInfo', Object.freeze(rosterReq), Object.freeze(rosterResp));
+    await new Promise((r) => setTimeout(r, 300));
+    if (received.length !== beforeRosterAgain) errors.push('Roster re-sent within 2 minutes');
 
     if (errors.length > 0) {
       console.error('[smoke] FAILED:');

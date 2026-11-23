@@ -6,7 +6,7 @@ const { promisify } = require('util');
 
 const gzip = promisify(zlib.gzip);
 
-const version = '1.6.1';
+const version = '1.7.0';
 const pluginName = 'swpl';
 
 // Commands we listen to. Each one maps 1:1 to an `ingest` type on the Peace
@@ -62,6 +62,22 @@ const ARENA_COMMANDS = ['dimensionarena_getSeasonInfo'];
 // response, i.e. exactly what a SWEX JSON export contains, so every game login
 // refreshes the player's account on Peace without a manual upload.
 const ACCOUNT_COMMANDS = ['HubUserLogin'];
+
+// Live guild roster (Peace › Team › Squad). Fires at login and when the siege
+// menu opens: its `member_info_list` is the guild's whole member list. Peace
+// reconciles the roster with it only when the player runs the guild (a lead or
+// the guild master); for everyone else it answers `not_roster_lead` and the
+// plugin stops sending it for a while. Only the member list leaves the
+// machine, without the Hive account ids.
+const ROSTER_COMMANDS = ['GetGuildSiegeParticipationInfo'];
+
+// A lead opening the siege menu twice in a row needs one sync, not two.
+const ROSTER_MIN_INTERVAL_MS = 2 * 60 * 1000;
+// Peace said this player does not run the guild: ask again after this.
+const ROSTER_NOT_LEAD_PAUSE_MS = 6 * 60 * 60 * 1000;
+// A refusal (token, other game account): wait as long as the account sync.
+const ROSTER_REFUSED_PAUSE_MS = 30 * 60 * 1000;
+const rosterNextAllowed = new Map(); // wizard_id -> ms before which nothing is sent
 
 // Keys dropped before the login response leaves the machine: the game session,
 // the account/device block, other players' data and heavy blocks Peace never
@@ -178,6 +194,45 @@ function deriveStorageApiUrl(apiUrl) {
 function deriveArenaApiUrl(apiUrl) {
   const base = deriveOrigin(apiUrl);
   return base ? `${base}/api/user/dimension-arena/import` : null;
+}
+
+// Derive the live guild roster URL.
+function deriveRosterSyncUrl(apiUrl) {
+  const base = deriveOrigin(apiUrl);
+  return base ? `${base}/api/guild/members/live-sync` : null;
+}
+
+// The member list of a GetGuildSiegeParticipationInfo response, reduced to
+// what the roster needs: no Hive ids (`channel_uid`), no country, no arena
+// rating, and none of the response's defense decks.
+function trimParticipation(resp) {
+  const info = resp && resp.participation_info;
+  const list = resp && resp.member_info_list;
+  if (!info || info.guild_id == null || !Array.isArray(list) || list.length === 0) return null;
+  return {
+    participation_info: { guild_id: info.guild_id },
+    member_info_list: list.map((m) => ({
+      guild_id: m && m.guild_id,
+      wizard_id: m && m.wizard_id,
+      wizard_name: m && m.wizard_name,
+      join_timestamp: m && m.join_timestamp,
+    })),
+    tvalue: resp.tvalue,
+  };
+}
+
+// One log line out of Peace's roster summary, or null when nothing changed.
+function describeRosterSync(body) {
+  if (!body || body.synced !== true) return null;
+  const parts = [];
+  if (Array.isArray(body.joined) && body.joined.length > 0) {
+    parts.push(`+${body.joined.length} joined (${body.joined.join(', ')})`);
+  }
+  if (Array.isArray(body.left) && body.left.length > 0) {
+    parts.push(`-${body.left.length} left (${body.left.join(', ')})`);
+  }
+  if (body.renamed > 0) parts.push(`${body.renamed} renamed`);
+  return `Guild roster updated on Peace${parts.length ? ' · ' + parts.join(' · ') : ''}`;
 }
 
 // Derive the per-user account auto-sync URL.
@@ -457,6 +512,16 @@ module.exports = {
       });
     }
 
+    // Live guild roster. Routed to /api/guild/members/live-sync.
+    for (const command of ROSTER_COMMANDS) {
+      proxy.on(command, (req, resp) => {
+        const c = cfg();
+        if (!c.enabled) return;
+        if (!resp || resp.ret_code !== 0) return;
+        this.uploadRoster(proxy, config, req, resp);
+      });
+    }
+
     // Dimension Arena season. Routed to /api/user/dimension-arena/import.
     // Peace keeps only the latest capture per wizard, so dedup is enough to
     // stop the lobby's re-fires from re-posting the same 580 KB.
@@ -612,6 +677,102 @@ module.exports = {
     }
   },
 
+  // Live guild roster: the trimmed member list to /api/guild/members/live-sync.
+  // Peace answers 200 with `synced` or `skipped` (not_roster_lead, too_soon,
+  // unchanged, too_many_departures...), 409 when this game account is not the
+  // one linked to the Peace account.
+  async uploadRoster(proxy, config, req, resp) {
+    const c = config.Config.Plugins[pluginName] || {};
+    const log = (type, message) => proxy.log({ type, source: 'plugin', name: pluginName, message });
+    const targetUrl = deriveRosterSyncUrl(c.apiUrl);
+    if (!targetUrl || !c.apiToken) return;
+    if (!isSafeTarget(targetUrl)) {
+      log('error', 'Guild roster sync: the Peace ingest URL must use https, nothing was sent.');
+      return;
+    }
+    const wizardId = req && req.wizard_id;
+    if (!wizardId) return;
+    const now = Date.now();
+    const next = rosterNextAllowed.get(wizardId);
+    if (next && now < next) return;
+    const raw = trimParticipation(resp);
+    if (!raw) return;
+    rosterNextAllowed.set(wizardId, now + ROSTER_MIN_INTERVAL_MS);
+
+    try {
+      const res = await axios.post(
+        targetUrl,
+        {
+          version: 1,
+          type: 'GuildSiegeParticipationInfo',
+          wizardId,
+          capturedAt: Math.floor(now / 1000),
+          raw,
+        },
+        {
+          headers: { Authorization: `Bearer ${c.apiToken}`, 'Content-Type': 'application/json' },
+          timeout: 20000,
+          validateStatus: (s) => s >= 200 && s < 300,
+        }
+      );
+      const body = res.data || {};
+      if (body.departuresDeferred > 0) {
+        log(
+          'info',
+          `Guild roster sync: ${body.departuresDeferred} member(s) missing from the game list stay on Peace, only a guild master's list removes members.`
+        );
+      }
+      if (Array.isArray(body.foreign) && body.foreign.length > 0) {
+        log(
+          'info',
+          `Guild roster sync: not added, still in another guild on Peace: ${body.foreign.join(', ')}.`
+        );
+      }
+      const line = describeRosterSync(body);
+      if (line) {
+        log('success', line);
+        return;
+      }
+      if (body.skipped === 'not_roster_lead') {
+        // Members' plugins stop asking: only a lead's list is used.
+        rosterNextAllowed.set(wizardId, now + ROSTER_NOT_LEAD_PAUSE_MS);
+        if (c.debugLog) log('debug', 'Guild roster sync: only leads update the roster, skipped.');
+        return;
+      }
+      if (body.skipped === 'too_many_departures') {
+        log(
+          'warning',
+          'Guild roster sync: this list would remove too many members at once, Peace kept the roster. Upload the guild JSON on Peace if that many really left.'
+        );
+        return;
+      }
+      if (c.debugLog) log('debug', `Guild roster sync: ${body.skipped || 'nothing to do'}.`);
+    } catch (err) {
+      const status = err.response && err.response.status;
+      const data = (err.response && err.response.data) || {};
+      // An older Peace does not know the route yet: stay quiet.
+      if (status === 404) {
+        rosterNextAllowed.set(wizardId, now + ROSTER_NOT_LEAD_PAUSE_MS);
+        return;
+      }
+      if (status === 401 || status === 403 || status === 409) {
+        rosterNextAllowed.set(wizardId, now + ROSTER_REFUSED_PAUSE_MS);
+      }
+      if (status === 401) {
+        log(
+          'error',
+          'Peace rejected the API token. Generate a new one in Peace › Profile › SWEX plugin token.'
+        );
+      } else if (status === 403 || status === 409) {
+        // A guild token, or another game account: the roster is not theirs to sync.
+        if (c.debugLog) log('debug', `Guild roster sync: ${data.message || 'refused'}.`);
+      } else {
+        const detail = data.message || data.error || err.message || 'unknown error';
+        log('error', `Guild roster sync failed${status ? ` (HTTP ${status})` : ''}: ${detail}`);
+      }
+    }
+  },
+
   async upload(proxy, config, req, command, rawResp, targetUrl) {
     const c = config.Config.Plugins[pluginName] || {};
     if (!targetUrl || !c.apiToken) {
@@ -665,6 +826,11 @@ module.exports = {
         name: pluginName,
         message: `${command} uploaded${summary ? ' · ' + summary : ''}`,
       });
+      // A lead's matchup also adds the guild's new members to Peace's roster.
+      const rosterLine = describeRosterSync(body.rosterSync);
+      if (rosterLine) {
+        proxy.log({ type: 'success', source: 'plugin', name: pluginName, message: rosterLine });
+      }
     } catch (err) {
       const status = err.response && err.response.status;
       const body = err.response && err.response.data;

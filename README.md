@@ -28,6 +28,12 @@ The plugin listens to the game's API responses while SWEX runs as a proxy and re
 | `GetGuildSiegeStatusInfo`               | Siege screen                   | Current season, attached to the other uploads                   |
 | `GetGuildSiegeParticipatedSiegeIdList`  | Siege screen                   | Context only                                                    |
 
+**Your guild roster** (sent to `/api/guild/members/live-sync`, v1.7.0+, see [Live guild roster](#live-guild-roster)):
+
+| SW API command                   | When it fires          | What Peace does with it                                              |
+| -------------------------------- | ---------------------- | -------------------------------------------------------------------- |
+| `GetGuildSiegeParticipationInfo` | Game login, siege menu | Arrivals, departures and renames in your guild's roster (leads only) |
+
 **Your own account** (needs a personal token, see [Installation](#installation)):
 
 | SW API command                     | Sent to                        | What Peace does with it                                           |
@@ -68,6 +74,18 @@ With `Auto-sync my account` ticked, every time you open Summoners War the plugin
 - **At most every 30 minutes.** Reconnections and logins within 30 minutes of the last sync are skipped, so your account on Peace can be up to 30 minutes behind the game.
 - **Incomplete logins are dropped.** The game sometimes answers a login without part of the account; Peace then keeps your previous copy.
 - **Trimmed before it leaves your machine.** The game session, your device and account identifiers, your friends list and data Peace never reads are removed by the plugin, and again by Peace on arrival. The rest is gzipped (about 400 KB).
+
+## Live guild roster
+
+When a lead (or the guild master) plays with the plugin, Peace keeps the guild's roster up to date without anyone uploading a JSON: a player who joins or leaves in game shows up on Peace the next time a lead opens the siege menu or logs in.
+
+- **Leads only.** The member list is the guild's whole roster, so Peace uses it only from a lead's or the guild master's own game account. Everyone else's plugin sends it once, Peace answers that it is not needed, and the plugin stops asking for six hours.
+- **Departures need a guild master.** A leader's list adds new members and new names; members missing from it are only removed when a guild master's list (or a JSON import) confirms it. The owner, the guild master and anyone of the sender's rank or above are never removed this way.
+- **Personal token.** A guild token from `/admin/tokens` does not sync the roster.
+- **Only the member list leaves your machine**: guild id, wizard ids, names and join dates. Hive account ids, countries and the response's defense decks are removed before sending.
+- **At most every 2 minutes.** Opening the siege menu twice in a row sends one list.
+- **During a match**, the siege map a lead opens also adds new members, but never removes anyone: that list may leave out members who sat the siege out.
+- **At most a third of the guild leaves in a day this way.** A list that would remove more is refused, and the plugin logs it. If that many really left, upload the guild's JSON on Peace.
 
 ## Configuration
 
